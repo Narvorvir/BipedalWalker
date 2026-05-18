@@ -71,7 +71,7 @@ class AgentPPO:
 
         returns_log = []
 
-        obs, _ = env.reset()
+        obs, _ = self.env.reset()
         
         
         buffer = {
@@ -91,7 +91,7 @@ class AgentPPO:
                 action, log_prob = self.policyNetwork.sample_action(obs_t)
                 value = self.valueNetwork(obs_t)
 
-                next_obs, reward, terminated, truncated, _ = env.step(action.detach().numpy())
+                next_obs, reward, terminated, truncated, _ = self.env.step(action.detach().numpy())
                 done = terminated or truncated
 
                 buffer["obs"].append(obs)
@@ -103,7 +103,7 @@ class AgentPPO:
                 
                 obs = next_obs
                 if done:
-                    obs, _ = env.reset()
+                    obs, _ = self.env.reset()
 
             returns = []
             G = 0
@@ -206,8 +206,9 @@ class AgentPPO:
 
 # Initialisation
 hardcore = False
-sizeModel = 128
+sizeModel = 64
 gamma=0.99; lam=0.95; clip_eps=0.2; policy_lr=3e-4; value_lr=1e-3
+# gamma=0.99; lam=0.95; clip_eps=0.2; policy_lr=1e-4; value_lr=5e-4
 
 PATH = 'C:/Users/nathw/Desktop/TIPE/Code/BipedalWalkerTerminer/Models/ModelTest'
 PATH_INITIAL = 'C:/Users/nathw/Desktop/TIPE/Code/BipedalWalkerTerminer/Models/ModelInitial'
@@ -216,10 +217,10 @@ env = gym.make("BipedalWalker-v3", hardcore=hardcore)
 envTest = gym.make("BipedalWalker-v3", render_mode="human",  hardcore=hardcore)
 
 agent = AgentPPO(env,envTest, sizeModel)
-agent.loadModel(PATH)
-returns = agent.train(episodes=180, gamma=gamma, lam=lam,
+# agent.loadModel(PATH)
+returns = agent.train(episodes=100, gamma=gamma, lam=lam,
                     clip_eps=clip_eps,
                     policy_lr=policy_lr, value_lr=value_lr)
-dessinerCourbe(returns, sizeModel, gamma, lam, clip_eps, policy_lr, value_lr)
-agent.save(PATH)
+# dessinerCourbe(returns, sizeModel, gamma, lam, clip_eps, policy_lr, value_lr)
+# agent.save(PATH)
 agent.test(10)

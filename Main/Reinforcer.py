@@ -104,9 +104,6 @@ def reinforce(env, policy, episodes, gamma=0.99, lr=3e-5):
 
 
 # Initialisation
-
-
-
 env = gym.make("BipedalWalker-v3", render_mode=None)
 obs_dim = env.observation_space.shape[0]
 action_dim = env.action_space.shape[0]
