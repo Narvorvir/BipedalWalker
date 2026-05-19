@@ -1,112 +1,141 @@
 import numpy as np
-import tensorflow as tf
 import gymnasium as gym
 import matplotlib.pyplot as plt
-from collections import deque
+import torch
+import torch.nn as nn
+from torch.optim import Adam
 
-# Créer l'environnement
-env = gym.make('CartPole-v1', render_mode=None)  # "human" seulement pour test
+# Créer l'environnement pour récupérer les dimensions
+env = gym.make('CartPole-v1', render_mode=None)
+state_dim = env.observation_space.shape[0]  # Dynamique (ici égal à 4)
+action_dim = env.action_space.n             # Dynamique (ici égal à 2)
 
-# Réseau acteur
-actor = tf.keras.Sequential([
-    tf.keras.layers.Dense(128, activation='relu'),
-    tf.keras.layers.Dense(64, activation='relu'),
-    tf.keras.layers.Dense(env.action_space.n, activation='softmax')
-])
+# Réseau acteur (Modifications : dimensions d'entrée et retrait des crochets [])
+actor = nn.Sequential(
+    nn.Linear(state_dim, 64),
+    nn.ReLU(),
+    nn.Linear(64, 64),
+    nn.ReLU(),
+    nn.Linear(64, action_dim),
+    nn.Softmax(dim=-1) # Spécifier la dimension pour le Softmax est fortement recommandé
+)
 
-# Réseau critique
-critic = tf.keras.Sequential([
-    tf.keras.layers.Dense(128, activation='relu'),
-    tf.keras.layers.Dense(64, activation='relu'),
-    tf.keras.layers.Dense(1)
-])
+# Réseau critique (Modifications : dimensions d'entrée, retrait des crochets et de la dernière ReLU)
+# Note : Pas de ReLU en sortie du critique pour lui permettre de prédire des valeurs négatives si besoin.
+critic = nn.Sequential(
+    nn.Linear(state_dim, 64),
+    nn.ReLU(),
+    nn.Linear(64, 64),
+    nn.ReLU(),
+    nn.Linear(64, 1)
+)
 
-# Optimizers
-actor_optimizer = tf.keras.optimizers.Adam(learning_rate=0.0005)
-critic_optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+# Optimizers (Modifications : .parameters() ajouté et 'learning_rate' changé en 'lr')
+# actor_optimizer = Adam(actor.parameters(), lr=0.001)
+# critic_optimizer = Adam(critic.parameters(), lr=0.002)
+actorOptimize = Adam(actor.parameters(), lr=0.0005)
+criticOptimizer = Adam(critic.parameters(), lr=0.001)
 
 # Hyperparamètres
-num_episodes = 150
-gamma = 0.99
-entropy_beta = 0.01  # encourage exploration
+NUM_EPISODES = 300 
+GAMMA = 0.99 # facteur d'atténuation à quel point les anciens états sont importants
 
-rewards_history = []
-avg_rewards = []
+rewardsHistory = []
+avgRewards = []
 
 print("Entraînement lancé...")
-for episode in range(num_episodes):
+for episode in range(NUM_EPISODES):
     state, _ = env.reset()
     episode_reward = 0
-
     done = False
+    
     while not done:
-        with tf.GradientTape() as actor_tape, tf.GradientTape() as critic_tape:
-            # Action selon acteur
-            action_probs = actor(np.array([state]))
-            action = np.random.choice(env.action_space.n, p=action_probs.numpy()[0])
+        stateTensor = torch.FloatTensor(state)
+        
+        # 2 Calcule de l'action par l'acteur (estimation) 
+        actionProbs = actor(stateTensor)
+        dist = torch.distributions.Categorical(actionProbs) # créer une distribution par rapport à la proportion des valeurs et % à l'indice
+        actionTensor = dist.sample()
+        action = actionTensor.item() 
+        
+        # 3 Progretion dans l'environement 
+        next_state, reward, terminated, truncated, _ = env.step(action)
+        done = terminated or truncated
+        
+        # 4 Calcule de la valeur de l'état actuel par le critque
+        stateValue = critic(stateTensor)
 
-            # Étape dans l'environnement
-            next_state, reward, terminated, truncated, _ = env.step(action)
-            done = terminated or truncated
-
-            # Valeurs critiques
-            state_value = critic(np.array([state]))[0, 0]
-            next_state_value = critic(np.array([next_state]))[0, 0] if not done else 0.0
-
-            # Avantage
-            advantage = reward + gamma * next_state_value - state_value
-
-            # Pertes
-            actor_loss = -tf.math.log(action_probs[0, action]) * advantage
-            # entropy = -tf.reduce_sum(action_probs * tf.math.log(action_probs + 1e-10))
-            #entropy = 1 
-            # actor_loss -= entropy_beta * entropy  # encourage exploration
-
-            critic_loss = tf.square(advantage)
-
-        # Mise à jour des poids
-        actor_gradients = actor_tape.gradient(actor_loss, actor.trainable_variables)
-        critic_gradients = critic_tape.gradient(critic_loss, critic.trainable_variables)
-        actor_optimizer.apply_gradients(zip(actor_gradients, actor.trainable_variables))
-        critic_optimizer.apply_gradients(zip(critic_gradients, critic.trainable_variables))
-
+        if not done:
+            # Utilisation reseau du critic
+            nextStateTensor = torch.FloatTensor(next_state)
+            nextStateValue = critic(nextStateTensor).detach() # pas de tirage car une unique valeur de sortie
+        else:
+            nextStateValue = torch.tensor(0.0) # reset
+            
+        # 5 Calcule de l'avantage 
+        advantage = reward + GAMMA * nextStateValue - stateValue
+        
+        # 6 Calcul des Pertes (Losses)
+        log_prob = dist.log_prob(actionTensor)
+        actor_loss = -log_prob * advantage.detach() # (- car ln) et contient à la fois le tensor et le graphe de calcul
+        critic_loss = advantage.pow(2)
+        
+        # 7 Mise à jour des poids des réseaux de neurones Actor et Critic
+        # met à zero les gradients
+        actorOptimize.zero_grad()  
+        criticOptimizer.zero_grad()
+        
+        # calcule gradient
+        actor_loss.backward()
+        critic_loss.backward()
+        
+        # met à jour les poids des reseaux de neurones
+        actorOptimize.step()
+        criticOptimizer.step()
+        
+        # Avancer d'un pas
         state = next_state
         episode_reward += reward
 
-    # Tracking
-    rewards_history.append(episode_reward)
-    avg_reward = np.mean(rewards_history[-50:])  # moyenne glissante
-    avg_rewards.append(avg_reward)
+    # Sauvegarde des scores pour le graphique (Ajouté)
+    rewardsHistory.append(episode_reward)
+    avgReward = np.mean(rewardsHistory[-50:])
+    avgRewards.append(avgReward)
+    
+    if (episode + 1) % 10 == 0:
+        print(f"Épisode {episode+1}/{NUM_EPISODES} | Score: {episode_reward} | Moyenne (50 derniers): {avgReward:.1f}")
 
-    if episode % 10 == 0:
-        print(f"Episode {episode}, Reward: {episode_reward}, Moyenne(50): {avg_reward:.2f}")
+env.close()
 
 # ---------- Fonction pour tester le modèle ----------
-def test_agent(env, actor, episodes=5, render=True):
-    for ep in range(episodes):
+def test_agent(env, actor, numEpisodes=3):
+    for episode in range(numEpisodes):
         state, _ = env.reset()
         done = False
-        total_reward = 0
+        totalReward = 0
         while not done:
-            if render:
-                env.render()
-            action_probs = actor(np.array([state]))
-            action = np.argmax(action_probs.numpy()[0])  # exploitation pure
+            stateTensor = torch.FloatTensor(state)
+            with torch.no_grad(): # Pas besoin de stocker les calcul pour calculer le backward (calcul du gradient)
+                actionProbs = actor(stateTensor)
+            
+            action = torch.argmax(actionProbs).item()  
             state, reward, terminated, truncated, _ = env.step(action)
-            total_reward += reward
+            totalReward += reward
             done = terminated or truncated
-        print(f"Test Episode {ep+1}, Total Reward: {total_reward}")
+        print(f"Test Episode {episode+1}, Total Reward: {totalReward}")
 
 # Test après apprentissage
-print("\nTest de l'agent entraîné...")
+print("Test de l'agent entraîné (Fermer la fenêtre du jeu pour voir le graphique)...")
 env_test = gym.make("CartPole-v1", render_mode="human")
-test_agent(env_test, actor, episodes=5, render=True)
+test_agent(env_test, actor, numEpisodes=5)
 env_test.close()
 
 # Courbe de progression
-plt.plot(rewards_history, label="Reward brut")
-plt.plot(avg_rewards, label="Moyenne glissante (50)")
+plt.figure(figsize=(10, 5))
+plt.plot(rewardsHistory, label="Reward brut", alpha=0.4)
+plt.plot(avgRewards, label="Moyenne glissante (50)", color="red", linewidth=2)
 plt.xlabel("Épisodes")
 plt.ylabel("Reward")
+plt.title("Progression de l'entraînement de l'agent")
 plt.legend()
 plt.show()
