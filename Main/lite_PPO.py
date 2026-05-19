@@ -1,173 +1,140 @@
-import gymnasium as gym
-import torch
-from torch.optim import Adam
 import numpy as np
+import gymnasium as gym
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+from torch.optim import Adam
 
-from moduleElemantaire import PolicyNetwork, ValueNetwork, dessinerCourbe, mean
+# Créer l'environnement pour récupérer les dimensions
+env = gym.make('CartPole-v1', render_mode=None)
+state_dim = env.observation_space.shape[0]  # Dynamique (ici égal à 4)
+action_dim = env.action_space.n             # Dynamique (ici égal à 2)
 
-import time
+# Réseau acteur (Modifications : dimensions d'entrée et retrait des crochets [])
+actor = nn.Sequential(
+    nn.Linear(state_dim, 64),
+    nn.ReLU(),
+    nn.Linear(64, 64),
+    nn.ReLU(),
+    nn.Linear(64, action_dim),
+    nn.Softmax(dim=-1) # Spécifier la dimension pour le Softmax est fortement recommandé
+)
 
-# =====================================================================
-# PPO ALGORITHM
-# =====================================================================
+# Réseau critique (Modifications : dimensions d'entrée, retrait des crochets et de la dernière ReLU)
+# Note : Pas de ReLU en sortie du critique pour lui permettre de prédire des valeurs négatives si besoin.
+critic = nn.Sequential(
+    nn.Linear(state_dim, 64),
+    nn.ReLU(),
+    nn.Linear(64, 64),
+    nn.ReLU(),
+    nn.Linear(64, 1)
+)
 
-class AgentPPO:
+# Optimizers (Modifications : .parameters() ajouté et 'learning_rate' changé en 'lr')
+# actor_optimizer = Adam(actor.parameters(), lr=0.001)
+# critic_optimizer = Adam(critic.parameters(), lr=0.002)
+actor_optimizer = Adam(actor.parameters(), lr=0.0005)
+critic_optimizer = Adam(critic.parameters(), lr=0.001)
+# Hyperparamètres
+num_episodes = 300
+gamma = 0.99
 
-    def __init__(self, env, envTest, sizeModel):
+rewards_history = []
+avg_rewards = []
 
-        self.env = env
-        self.envTest = envTest
-        self.obsDim = env.observation_space.shape[0]
-        self.actionDim = env.action_space.shape[0]
-
-        self.policyNetwork = PolicyNetwork(self.obsDim, self.actionDim,sizeModel)
-        self.valueNetwork = ValueNetwork(self.obsDim, sizeModel)
-
-
-
-    def train(self, episodes,
-                gamma=0.99, lam=0.95,
-                clip_eps=0.2,
-                policy_lr=3e-4, value_lr=1e-3,
-                steps_per_update=4000, mini_batch_size=256, epochs=10):
-
-        # Optimize
-        opt_policy = Adam(self.policyNetwork.parameters(), lr=policy_lr)
-        opt_value = Adam(self.valueNetwork.parameters(), lr=value_lr)
-
-        returns_log = []
-
-        obs, _ = self.env.reset()
+print("Entraînement lancé...")
+for episode in range(num_episodes):
+    state, _ = env.reset()
+    episode_reward = 0
+    done = False
+    
+    while not done:
+        # 1 Préparation de l'état en tenseur PyTorch
+        # state_tensor = torch.FloatTensor(state).unsqueeze(0) 
+        state_tensor = torch.FloatTensor(state)
+        # print(state_tensor)
         
+        # 2 Action selon l'acteur : on met dans le réseau de neurones 
+        actionProbs = actor(state_tensor)
+        dist = torch.distributions.Categorical(actionProbs) # créer une distribution par rapport à la proportion des valeurs et % à l'indice
+        actionTensor = dist.sample()
+        action = actionTensor.item() 
         
-        buffer = {
-            "obs": [], "actions": [], "log_probs": [], "rewards": [], "dones": [], "values": []
-        }
+        # 3 Étape dans l'environnement
+        next_state, reward, terminated, truncated, _ = env.step(action)
+        done = terminated or truncated
+        
+        # 4 Valeurs critiques
+        # state_value = critic(state_tensor).squeeze() 
+        stateValue = critic(state_tensor)
 
-        print("Lancement de l'apprentissage")
-
-        for episode in range(1,episodes):
-
-            # --------------------------------------------------------------
-            # Collecte de trajectoires jusqu’à steps_per_update
-            # --------------------------------------------------------------
+        if not done:
+            next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0)
+            next_state_value = critic(next_state_tensor).squeeze().detach()
+        else:
+            next_state_value = torch.tensor(0.0)
             
-            for _ in range(steps_per_update):
-                obs_t = torch.tensor(obs, dtype=torch.float32)
-                action, log_prob = self.policyNetwork.sample_action(obs_t)
-                value = self.valueNetwork(obs_t)
+        # 5. Avantage 
+        advantage = reward + gamma * next_state_value - stateValue
+        
+        # 6. Calcul des Pertes (Losses)
+        log_prob = dist.log_prob(actionTensor)
+        actor_loss = -log_prob * advantage.detach()
+        critic_loss = advantage.pow(2)
+        
+        # 7. Mise à jour des poids 
+        actor_optimizer.zero_grad()
+        critic_optimizer.zero_grad()
+        
+        actor_loss.backward()
+        critic_loss.backward()
+        
+        actor_optimizer.step()
+        critic_optimizer.step()
+        
+        # Avancer d'un pas
+        state = next_state
+        episode_reward += reward
 
-                next_obs, reward, terminated, truncated, _ = self.env.step(action.detach().numpy())
-                done = terminated or truncated
+    # Sauvegarde des scores pour le graphique (Ajouté)
+    rewards_history.append(episode_reward)
+    avg_reward = np.mean(rewards_history[-50:])
+    avg_rewards.append(avg_reward)
+    
+    if (episode + 1) % 10 == 0:
+        print(f"Épisode {episode+1}/{num_episodes} | Score: {episode_reward} | Moyenne (50 derniers): {avg_reward:.1f}")
 
-                buffer["obs"].append(obs)
-                buffer["actions"].append(action.detach().numpy())
-                buffer["log_probs"].append(log_prob.detach())
-                buffer["rewards"].append(reward)
-                buffer["dones"].append(done)
-                buffer["values"].append(value.item())
-                
-                obs = next_obs
-                if done:
-                    obs, _ = self.env.reset()
+env.close()
 
-            returns = []
-            G = 0
-            for r, d in zip(reversed(buffer["rewards"]), reversed(buffer["dones"])):
-                if d : G = 0
-                G = r + gamma * G # Calcule TD
-                returns.insert(0, G)
-
+# ---------- Fonction pour tester le modèle ----------
+def test_agent(env, actor, episodes=3):
+    for ep in range(episodes):
+        state, _ = env.reset()
+        done = False
+        total_reward = 0
+        while not done:
+            state_tensor = torch.FloatTensor(state).unsqueeze(0)
+            with torch.no_grad(): # Pas besoin de stocker les gradients pendant le test
+                action_probs = actor(state_tensor)
             
-            returns = torch.tensor(returns, dtype=torch.float32)
-            values = torch.tensor(buffer["values"], dtype=torch.float32)
-            actions = torch.tensor(np.array(buffer["actions"]), dtype=torch.float32)
-            old_log_probs = torch.stack(buffer["log_probs"])
-            obs_tensor = torch.tensor(np.array(buffer["obs"]), dtype=torch.float32)
-            dones = torch.tensor(buffer["dones"], dtype=torch.float32)
+            action = torch.argmax(action_probs).item()  
+            state, reward, terminated, truncated, _ = env.step(action)
+            total_reward += reward
+            done = terminated or truncated
+        print(f"Test Episode {ep+1}, Total Reward: {total_reward}")
 
-            # --------------------------------------------------------------
-            # GAE : Generalized Advantage Estimation
-            # --------------------------------------------------------------
-            advantages = self.compute_gae(buffer["rewards"], values.tolist(), dones.tolist(), gamma, lam)
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-6) # normale l'avantage
+# Test après apprentissage
+print("\nTest de l'agent entraîné (Fermer la fenêtre du jeu pour voir le graphique)...")
+env_test = gym.make("CartPole-v1", render_mode="human")
+test_agent(env_test, actor, episodes=5)
+env_test.close()
 
-            # --------------------------------------------------------------
-            # PPO updates
-            # --------------------------------------------------------------
-            dataset_size = len(returns)
-            for _ in range(epochs):
-                idx = torch.randperm(dataset_size) # eviter l'influence de l'ordre (on mélange)
-
-                # transforme les données bruts et calcule le gradient sur des batchs (des petits morceaux)
-                # accèlere le code de decouper
-                for start in range(0, dataset_size, mini_batch_size):
-                    end = start + mini_batch_size
-                    batch_idx = idx[start:end]
-
-                    b_obs = obs_tensor[batch_idx]
-                    b_actions = actions[batch_idx]
-                    b_old_logp = old_log_probs[batch_idx]
-                    b_adv = advantages[batch_idx]
-                    b_returns = returns[batch_idx]
-
-                    dist = self.policyNetwork.get_dist(b_obs)
-
-                    # Clipping
-                    raw_action = torch.atanh(torch.clamp(b_actions, -0.999, 0.999))
-
-                    # Calcule ratio
-                    new_logp = dist.log_prob(raw_action).sum(dim=-1)
-                    new_logp -= torch.log(1 - b_actions.pow(2) + 1e-6).sum(dim=-1)
-                    ratio = torch.exp(new_logp - b_old_logp)
-
-                    # Clipping ratio
-                    clipped_ratio = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
-                    policy_loss = -torch.min(ratio * b_adv, clipped_ratio * b_adv).mean()
-
-                    # Erreur Quadratique (MSE)
-                    value_pred = self.valueNetwork(b_obs)
-                    value_loss = ((b_returns - value_pred)**2).mean()
-
-                    opt_policy.zero_grad()
-                    policy_loss.backward()
-                    opt_policy.step()
-
-                    opt_value.zero_grad()
-                    value_loss.backward()
-                    opt_value.step()
-
-            # --------------------------------------------------------------
-            # Logging
-            # --------------------------------------------------------------
-            returns_log.append(np.sum(buffer["rewards"]))
-            buffer = {k: [] for k in buffer}
-
-            if episode % 10 == 0:
-                print(f"Episode {episode}/{episodes} | Return: {returns_log[-1]:.2f}")
-            
-
-        return returns_log
-
-
-
-# Initialisation
-hardcore = False
-sizeModel = 64
-gamma=0.99; lam=0.95; clip_eps=0.2; policy_lr=3e-4; value_lr=1e-3
-# gamma=0.99; lam=0.95; clip_eps=0.2; policy_lr=1e-4; value_lr=5e-4
-
-PATH = 'C:/Users/nathw/Desktop/TIPE/Code/BipedalWalkerTerminer/Models/ModelTest'
-PATH_INITIAL = 'C:/Users/nathw/Desktop/TIPE/Code/BipedalWalkerTerminer/Models/ModelInitial'
-
-env = gym.make("BipedalWalker-v3", hardcore=hardcore)
-envTest = gym.make("BipedalWalker-v3", render_mode="human",  hardcore=hardcore)
-
-agent = AgentPPO(env,envTest, sizeModel)
-# agent.loadModel(PATH)
-returns = agent.train(episodes=100, gamma=gamma, lam=lam,
-                    clip_eps=clip_eps,
-                    policy_lr=policy_lr, value_lr=value_lr)
-# dessinerCourbe(returns, sizeModel, gamma, lam, clip_eps, policy_lr, value_lr)
-# agent.save(PATH)
-agent.test(10)
+# Courbe de progression
+plt.figure(figsize=(10, 5))
+plt.plot(rewards_history, label="Reward brut", alpha=0.4)
+plt.plot(avg_rewards, label="Moyenne glissante (50)", color="red", linewidth=2)
+plt.xlabel("Épisodes")
+plt.ylabel("Reward")
+plt.title("Progression de l'entraînement de l'agent")
+plt.legend()
+plt.show()
