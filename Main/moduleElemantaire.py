@@ -10,6 +10,7 @@ import os
 # Réseaux : Policy & Value function
 # =====================================================================
 
+
 class PolicyNetwork(nn.Module):
     """
     Réseau de policy pour travailler sur un environement continu.
@@ -67,11 +68,11 @@ class PolicyNetwork(nn.Module):
         Échantillonne une action selon la policy et calcule sa log-probabilité.
         """
         distribution = self.get_dist(obs)
-        raw_action = distribution.rsample()
-        action = torch.tanh(raw_action)
+        rawAction = distribution.rsample() 
+        action = torch.tanh(rawAction) # peut aller de +inf à -inf donc on le remet entr 1 et -1
 
         # correction du log_prob pour le tanh
-        log_prob = distribution.log_prob(raw_action).sum(dim=-1)
+        log_prob = distribution.log_prob(rawAction).sum(dim=-1)
         log_prob -= torch.log(1 - action.pow(2) + 1e-6).sum(dim=-1)
 
         return action, log_prob
@@ -101,7 +102,7 @@ class ValueNetwork(nn.Module):
             nn.Linear(2*n, 1)
         )
 
-    def forward(self, obs):
+    def forward(self, obs : torch.tensor) -> torch.tensor:
         """
         Estime la valeur d'un état.
 

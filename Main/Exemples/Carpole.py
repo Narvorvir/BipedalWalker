@@ -46,7 +46,7 @@ avgRewards = []
 print("Entraînement lancé...")
 for episode in range(NUM_EPISODES):
     state, _ = env.reset()
-    episode_reward = 0
+    episodeReward = 0
     done = False
     
     while not done:
@@ -59,7 +59,7 @@ for episode in range(NUM_EPISODES):
         action = actionTensor.item() 
         
         # 3 Progretion dans l'environement 
-        next_state, reward, terminated, truncated, _ = env.step(action)
+        nextState, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
         
         # 4 Calcule de la valeur de l'état actuel par le critque
@@ -67,7 +67,7 @@ for episode in range(NUM_EPISODES):
 
         if not done:
             # Utilisation reseau du critic
-            nextStateTensor = torch.FloatTensor(next_state)
+            nextStateTensor = torch.FloatTensor(nextState)
             nextStateValue = critic(nextStateTensor).detach() # pas de tirage car une unique valeur de sortie
         else:
             nextStateValue = torch.tensor(0.0) # reset
@@ -94,16 +94,16 @@ for episode in range(NUM_EPISODES):
         criticOptimizer.step()
         
         # Avancer d'un pas
-        state = next_state
-        episode_reward += reward
+        state = nextState
+        episodeReward += reward
 
     # Sauvegarde des scores pour le graphique (Ajouté)
-    rewardsHistory.append(episode_reward)
+    rewardsHistory.append(episodeReward)
     avgReward = np.mean(rewardsHistory[-50:])
     avgRewards.append(avgReward)
     
     if (episode + 1) % 10 == 0:
-        print(f"Épisode {episode+1}/{NUM_EPISODES} | Score: {episode_reward} | Moyenne (50 derniers): {avgReward:.1f}")
+        print(f"Épisode {episode+1}/{NUM_EPISODES} | Score: {episodeReward} | Moyenne (50 derniers): {avgReward:.1f}")
 
 env.close()
 
