@@ -3,13 +3,12 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 import matplotlib.pyplot as plt
-
-from moduleElemantaire import dessinerCourbe, init_plot, update_plot
+import numpy as np
+from moduleElemantaire import drawPlot
 
 # CONCLUSIONS
 # Ne fonctionne pas
 
-fig, ax, line = init_plot()
 rewards_list = []
 
 class GaussianPolicy(nn.Module):
@@ -51,33 +50,37 @@ def reinforce(env, policy, episodes, gamma=0.99, lr=3e-5):
     # lr=3e-3 (semble plus stable)
 
     optimizer = Adam(policy.parameters(), lr=lr)
-    returns_list = []
+    returnList = []
+    avgRewards = []
+    rewardHistory = []
 
     for episode in range(episodes):
         obs, _ = env.reset()
-        ep_rewards = []
-        ep_log_probs = []
-
+        epRewards = []
+        epLogProbs = []
         done = False
 
+        # 1. Intéragit avec l'environement
         while not done:
             obs_t = torch.tensor(obs, dtype=torch.float32)
 
             action, log_prob = policy.sample_action(obs_t)
             action_np = action.detach().numpy()
 
-            next_obs, reward, terminated, truncated, info = env.step(action_np)
-
-            ep_rewards.append(reward)
-            ep_log_probs.append(log_prob)
-
+            next_obs, reward, terminated, truncated, _ = env.step(action_np)
             done = terminated or truncated
+
+            epRewards.append(reward)
+            epLogProbs.append(log_prob)
             obs = next_obs
 
+        rewardHistory.append(sum(epRewards))
         returns = []
-        G = 0 # return
+        avgReward = np.mean(rewardHistory[-50:])
+        avgRewards.append(avgReward)
 
-        for r in reversed(ep_rewards):
+        G = 0 # return
+        for r in reversed(epRewards):
             G = r + gamma * G
             returns.append(G)
         returns.reverse()
@@ -86,7 +89,7 @@ def reinforce(env, policy, episodes, gamma=0.99, lr=3e-5):
         returns_t = (returns_t - returns_t.mean()) / (returns_t.std() + 1e-8)  # normalize
 
         # Calcule de la perte
-        log_probs_t = torch.stack(ep_log_probs)
+        log_probs_t = torch.stack(epLogProbs)
         loss = -(log_probs_t * returns_t).sum()
 
         # Backpropagation
@@ -94,13 +97,12 @@ def reinforce(env, policy, episodes, gamma=0.99, lr=3e-5):
         loss.backward()
         optimizer.step()
 
-        returns_list.append(sum(ep_rewards))
+        returnList.append(sum(rewardHistory))
 
         if (episode % 10 == 0):
-            print(f"Episode {episode}/{episodes} | Return {returns_list[-1]}")
-            update_plot(line, returns_list)
+            print(f"Episode {episode}/{episodes} | Return {returnList[-1]}")
         
-    return returns_list
+    return rewardHistory, avgRewards
 
 
 # Initialisation
@@ -109,7 +111,7 @@ obs_dim = env.observation_space.shape[0]
 action_dim = env.action_space.shape[0]
 policy = GaussianPolicy(obs_dim, action_dim)
 
-episodes = 10000
-returns = reinforce(env, policy, episodes)
+episodes = 500
+rewardHistory, avgRewards = reinforce(env, policy, episodes)
 
-dessinerCourbe(returns)
+drawPlot(rewardHistory, avgRewards)

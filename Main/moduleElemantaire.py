@@ -39,7 +39,7 @@ class PolicyNetwork(nn.Module):
         self.mean_layer = nn.Linear(2*n, action_dim)
         self.log_std = nn.Parameter(torch.zeros(action_dim))
 
-    def forward(self, obs):
+    def forward(self, obs : torch.Tensor) -> torch.Tensor:
         """
         Calcule la moyenne et l'écart-type pour un état donné.
 
@@ -55,7 +55,7 @@ class PolicyNetwork(nn.Module):
         std = torch.exp(self.log_std)
         return mean, std
 
-    def get_dist(self, obs):
+    def getDist(self, obs):
         """
         Retourne la distribution gaussienne des actions pour un état donné.
 
@@ -67,13 +67,14 @@ class PolicyNetwork(nn.Module):
         """
         Échantillonne une action selon la policy et calcule sa log-probabilité.
         """
-        distribution = self.get_dist(obs)
-        rawAction = distribution.rsample() 
+        distribution = self.getDist(obs)
+        # rawAction = distribution.rsample() 
+        rawAction = distribution.sample() 
         action = torch.tanh(rawAction) # peut aller de +inf à -inf donc on le remet entr 1 et -1
 
         # correction du log_prob pour le tanh
         log_prob = distribution.log_prob(rawAction).sum(dim=-1)
-        log_prob -= torch.log(1 - action.pow(2) + 1e-6).sum(dim=-1)
+        log_prob -= torch.log(torch.clamp(1 - action.pow(2), min=1e-6)).sum(dim=-1)
 
         return action, log_prob
 
@@ -147,34 +148,14 @@ def readTab(path):
         print(f"Erreur lors de la lecture : {e}")
         return []
 
-def dessinerCourbe(returns,sizeModel, gamma, lam, clip_eps, policy_lr, value_lr):
-    params_text = (f"Hyperparamètres:\n"
-                   f"Size: {sizeModel} | γ: {gamma} | λ: {lam}\n"
-                   f"Clip: {clip_eps} | LR_pol: {policy_lr} | LR_val: {value_lr}")
-    
-    plt.plot(returns, "ob")
-    plt.xlabel("Episode")
-    plt.ylabel("Return estimé (somme rewards collectées)")
-    plt.title("Progression de l'apprentissage PPO (BipedalWalker)\n"+params_text, fontsize=15, pad=20)
-    plt.plot(returns, "ob")
-    
-    # plt.figtext(0.6, 0.1, params_text, fontsize=10, bbox=dict(facecolor='white', alpha=0.8))
-    plt.tight_layout() # ajuste les marges
 
-def init_plot(title="Reward par épisode", xlabel="Episode", ylabel="Reward"):
-    fig, ax = plt.subplots()
-    line, = ax.plot([], [], '+')
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    plt.show(block=False)  # Affiche la fenêtre mais ne bloque pas
-    return fig, ax, line
-
-def update_plot(line, rewards_list):
-    line.set_xdata(range(len(rewards_list)))
-    line.set_ydata(rewards_list)
-    line.axes.relim()
-    line.axes.autoscale_view()
-    line.figure.canvas.draw()
-    line.figure.canvas.flush_events()  # Rafraîchit sans forcer le focus
-
+def drawPlot(rewardsHistory, avgRewards):
+    # Courbe de progression
+    plt.figure(figsize=(10, 5))
+    plt.plot(rewardsHistory, label="Reward brut", alpha=0.4)
+    plt.plot(avgRewards, label="Moyenne glissante (50)", color="red", linewidth=2)
+    plt.xlabel("Épisodes")
+    plt.ylabel("Reward")
+    plt.title("Progression de l'entraînement de l'agent")
+    plt.legend()
+    plt.show()

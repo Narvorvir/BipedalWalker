@@ -3,7 +3,7 @@ import torch
 from torch.optim import Adam
 import numpy as np
 
-from moduleElemantaire import PolicyNetwork, ValueNetwork, dessinerCourbe, mean
+from moduleElemantaire import PolicyNetwork, ValueNetwork, drawPlot, mean
 
 import time
 
@@ -145,7 +145,7 @@ class AgentPPO:
                     b_adv = advantages[batch_idx]
                     b_returns = returns[batch_idx]
 
-                    dist = self.policyNetwork.get_dist(b_obs)
+                    dist = self.policyNetwork.getDist(b_obs)
 
                     # Clipping
                     raw_action = torch.atanh(torch.clamp(b_actions, -0.999, 0.999))
@@ -218,7 +218,7 @@ envTest = gym.make("BipedalWalker-v3", render_mode="human",  hardcore=hardcore)
 
 agent = AgentPPO(env,envTest, sizeModel)
 # agent.loadModel(PATH)
-returns = agent.train(episodes=100, gamma=gamma, lam=lam,
+returns = agent.train(episodes=150, gamma=gamma, lam=lam,
                     clip_eps=clip_eps,
                     policy_lr=policy_lr, value_lr=value_lr)
 # dessinerCourbe(returns, sizeModel, gamma, lam, clip_eps, policy_lr, value_lr)

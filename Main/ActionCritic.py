@@ -4,7 +4,7 @@ import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from moduleElemantaire import PolicyNetwork, ValueNetwork
+from moduleElemantaire import PolicyNetwork, ValueNetwork, drawPlot
 
 NUM_EPISODE = 5
 
@@ -21,7 +21,7 @@ def trainA2C(env : gym.Env, Actor : PolicyNetwork, Critic : ValueNetwork,
 
     rewardsHistory = []
     avgRewards = [] 
-    advtangeAvgs = []
+    advantageAvgs = []
 
     for episode in range(episodes):
         state, _ = env.reset()
@@ -31,7 +31,7 @@ def trainA2C(env : gym.Env, Actor : PolicyNetwork, Critic : ValueNetwork,
 
         while not done:
             # 1. Estimation de l'action par l'Actor (foward, distribution multinomiale, tirage aléatoire)
-            stateTensor = torch.tensor(state)
+            stateTensor = torch.FloatTensor(state)
             action, logProb = Actor.sample_action(stateTensor)
 
             # 2. Avancer
@@ -39,20 +39,22 @@ def trainA2C(env : gym.Env, Actor : PolicyNetwork, Critic : ValueNetwork,
             done = terminated or truncated
 
             # 3. Caclule Critic
-            stateValue = Critic.forward(stateTensor)
+            stateValue = Critic.forward(stateTensor).squeeze()
             if not done:
                 nextStateTensor = torch.FloatTensor(nextState)
                 nextStateValue = Critic.forward(nextStateTensor).detach()
             else:
-                nextStateValue = torch.tensor(0)
+                nextStateValue = torch.tensor(0.)
 
-            # 4. Avantage
-            advantage = reward + gamma * (nextStateValue - stateValue)
+            # 4. Avantage 
+            # advantage = reward + gamma * (nextStateValue - stateValue)
+            advantage = reward + gamma * nextStateValue - stateValue
 
             # 5. Calcule des pertes
             # Important le detach car actor et critic doivent avoir des arbres indépendants
             actorLoss = - logProb * advantage.detach() 
             criticLoss = advantage.pow(2)
+
 
             # 6. Mettre à jour les réseaux
             actorOpt.zero_grad()
@@ -72,7 +74,7 @@ def trainA2C(env : gym.Env, Actor : PolicyNetwork, Critic : ValueNetwork,
             advantageAvg += advantage.item()
 
         # Sauvegarde des scores pour le graphique (Ajouté)
-        advtangeAvgs.append(advantageAvg)
+        advantageAvgs.append(advantageAvg)
         rewardsHistory.append(episodeReward)
         avgReward = np.mean(rewardsHistory[-50:])
         avgRewards.append(avgReward)
@@ -80,7 +82,7 @@ def trainA2C(env : gym.Env, Actor : PolicyNetwork, Critic : ValueNetwork,
         if (episode + 1) % 10 == 0:
             print(f"Épisode {episode+1}/{episodes} | Score: {episodeReward} | Moyenne (50 derniers): {avgReward:.1f} Avantage {advantageAvg}")
 
-    return rewardsHistory, avgRewards, advtangeAvgs
+    return rewardsHistory, avgRewards, advantageAvgs
 
 def testA2C(env : gym.Env, Actor : PolicyNetwork, numEpisodes : int =3):
     for episode in range(numEpisodes):
@@ -106,30 +108,19 @@ env = gym.make("BipedalWalker-v3", render_mode=None)
 obsDim = env.observation_space.shape[0]
 actionDim = env.action_space.shape[0]
 
-episodes = 150
+episodes = 300
 
 env = gym.make("BipedalWalker-v3")
 Actor = PolicyNetwork(obsDim, actionDim, n=128)
 Critic = ValueNetwork(obsDim, n=128)
 
-rewardsHistory, avgRewards, advtangeAvgs = trainA2C(env, Actor, Critic, episodes, gamma=0.95, policyLr = 0.003, valueLr=0.0005)
+rewardsHistory, avgRewards, advtangeAvgs = trainA2C(env, Actor, Critic, episodes, gamma=0.99, policyLr = 3e-4, valueLr=1e-3)
 
 # TESTE
 print("Test de l'agent entraîné (Fermer la fenêtre du jeu pour voir le graphique)...")
 input("...")
 envTest = gym.make("BipedalWalker-v3", render_mode="human")
-testA2C(envTest, Actor, 2)
+testA2C(envTest, Actor, 5)
 envTest.close()
 
-
-# Courbe de progression
-plt.figure(figsize=(10, 5))
-print(advtangeAvgs)
-plt.plot(rewardsHistory, label="Reward brut", alpha=0.4)
-plt.plot(avgRewards, label="Moyenne glissante (50)", color="red", linewidth=2)
-plt.plot(advtangeAvgs, label="Avantage Moyenne", color="green", linewidth=2)
-plt.xlabel("Épisodes")
-plt.ylabel("Reward")
-plt.title("Progression de l'entraînement de l'agent")
-plt.legend()
-plt.show()
+drawPlot(rewardsHistory, avgRewards)

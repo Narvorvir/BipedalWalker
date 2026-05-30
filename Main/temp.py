@@ -1,167 +1,226 @@
 import gymnasium as gym
 import torch
-import torch.nn as nn
 from torch.optim import Adam
 import numpy as np
-from tqdm import tqdm
-import matplotlib.pyplot as plt
 
-NOMBRE_EPISODE = 5
+from moduleElemantaire import PolicyNetwork, ValueNetwork, dessinerCourbe, mean
 
-# ===========================================
-# Environnement
-# ===========================================
+import time
 
-# ===========================================
-# Politique gaussienne
-# ===========================================
+# =====================================================================
+# PPO ALGORITHM
+# =====================================================================
 
-class GaussianPolicy(nn.Module):
-    def __init__(self, obs_dim, action_dim):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-        )
-        self.mu_layer = nn.Linear(64, action_dim)
-        self.log_std = nn.Parameter(torch.zeros(action_dim))
+class AgentPPO:
 
-    def forward(self, obs):
-        x = self.net(obs)
-        mu = self.mu_layer(x)
-        std = torch.exp(self.log_std)
-        return mu, std
+    def __init__(self, env, envTest, sizeModel):
 
-    def get_dist(self, obs):
-        mu, std = self.forward(obs)
-        return torch.distributions.Normal(mu, std)
+        self.env = env
+        self.envTest = envTest
+        self.obsDim = env.observation_space.shape[0]
+        self.actionDim = env.action_space.shape[0]
 
-    def sampleAction(self, obs):
-        dist = self.get_dist(obs)
-        raw_action = dist.rsample()
-        action = torch.tanh(raw_action)
+        self.policyNetwork = PolicyNetwork(self.obsDim, self.actionDim,sizeModel)
+        self.valueNetwork = ValueNetwork(self.obsDim, sizeModel)
 
-        log_prob = dist.log_prob(raw_action).sum(dim=-1)
-        log_prob -= torch.log(1 - action.pow(2) + 1e-6).sum(dim=-1)
 
-        return action, log_prob
+    def loadModel(self, path, policyName="model_policy_weights.pth", valueName="model_value_weights.pth"):
+        try:
+            print(f"Chargement du model {path}...")
+            self.policyNetwork.load_state_dict(torch.load(path + "/" + policyName, weights_only=True))
+            self.valueNetwork.load_state_dict(torch.load(path + "/" + valueName, weights_only=True))
+            print("A réussi à charger le model")
+        except:
+            print("N'a pas réussi à charger le model")
 
-# ===========================================
-# Critique = V(s)
-# ===========================================
-class ValueNet(nn.Module):
-    def __init__(self, obs_dim):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1)
-        )
+        # self.policyNetwork .eval()
 
-    def forward(self, obs):
-        return self.net(obs).squeeze(-1)
+    def save(self,path, policyName="model_policy_weights.pth", valueName="model_value_weights.pth"):
+        print("Sauvegarder model....")
+        torch.save(self.policyNetwork.state_dict(), path + "/" + policyName)
+        torch.save(self.valueNetwork.state_dict(), path  + "/" + valueName)
+        print(f"Model sauvgarder! à {path}")
 
-# ===========================================
-# A2C (Advantage Actor–Critic)
-# ===========================================
+    def compute_gae(self,rewards, values, dones, gamma=0.99, lam=0.95):
+        # Generalized Advantage Estimation
+        # Stabilise l'apprentissage 
+        # retourne une liste d'avantage de chaque épisode 
+        # rappel : avantage utile pour savoir si l'estimation était bonne
+        
+        gae = 0
+        advantages = []
 
-def actor_critic(env : gym.Env, ActorPolicy : GaussianPolicy, ValueNet : ValueNet, episodes, gamma=0.99, lr_policy=3e-4, lr_value=1e-3):
+        for t in reversed(range(len(rewards))):
+            next_value = values[t+1] if t+1 < len(values) else 0
+            # 1 - dones[t] s'annule si c'est le bipède a terminé
+            delta = rewards[t] + gamma * next_value * (1 - dones[t]) - values[t]
+            gae = delta + gamma * lam * (1 - dones[t]) * gae # additionne tous les échecs
+            advantages.insert(0, gae)
 
-    optim_policy = Adam(ActorPolicy.parameters(), lr=lr_policy)
-    optim_value = Adam(ValueNet.parameters(), lr=lr_value)
+        return torch.tensor(advantages, dtype=torch.float32)
 
-    returns_list = []
+    def train(self, episodes,
+                gamma=0.99, lam=0.95,
+                clip_eps=0.2,
+                policy_lr=3e-4, value_lr=1e-3,
+                steps_per_update=4000, mini_batch_size=256, epochs=10):
 
-    for ep in tqdm(range(episodes)):
-        obs, info = env.reset()
-        done = False
-        ep_return = 0
+        # Optimize
+        opt_policy = Adam(self.policyNetwork.parameters(), lr=policy_lr)
+        opt_value = Adam(self.valueNetwork.parameters(), lr=value_lr)
 
-        totalEpisodeReward = 0
+        returns_log = []
 
-        while not done:
+        obs, _ = self.env.reset()
+        
+        
+        buffer = {
+            "obs": [], "actions": [], "log_probs": [], "rewards": [], "dones": [], "values": []
+        }
 
-            obs_t = torch.tensor(obs, dtype=torch.float32)
+        print("Lancement de l'apprentissage")
 
-            value = ValueNet(obs_t)
-            action, log_prob = ActorPolicy.sampleAction(obs_t)
+        for episode in range(1,episodes):
 
-            next_obs, reward, terminated, truncated, info = env.step(action.detach().numpy())
-            done = terminated or truncated
-
-            with torch.no_grad():
-                next_value = ValueNet(torch.tensor(next_obs, dtype=torch.float32)) if not done else 0.0
-
-            td_target = reward + gamma * next_value
-            td_error  = td_target - value
-
-            adv = td_error.detach()
-            adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-
-            policy_loss = -(log_prob * adv).mean()
+            # --------------------------------------------------------------
+            # Collecte de trajectoires jusqu’à steps_per_update
+            # --------------------------------------------------------------
             
-            # policy_loss = -(log_prob * adv + 0.01 * entropy).mean()
+            for _ in range(steps_per_update):
+                obs_t = torch.tensor(obs, dtype=torch.float32)
+                action, log_prob = self.policyNetwork.sample_action(obs_t)
+                value = self.valueNetwork(obs_t)
 
-            optim_policy.zero_grad()
-            policy_loss.backward()
-            torch.nn.utils.clip_grad_norm_(ActorPolicy.parameters(), 0.5)
-            optim_policy.step()
+                next_obs, reward, terminated, truncated, _ = self.env.step(action.detach().numpy())
+                done = terminated or truncated
 
-            value_loss = td_error.pow(2).mean()
-            optim_value.zero_grad()
-            value_loss.backward()
-            torch.nn.utils.clip_grad_norm_(ValueNet.parameters(), 0.5)
-            optim_value.step()
+                buffer["obs"].append(obs)
+                buffer["actions"].append(action.detach().numpy())
+                buffer["log_probs"].append(log_prob.detach())
+                buffer["rewards"].append(reward)
+                buffer["dones"].append(done)
+                buffer["values"].append(value.item())
+                
+                obs = next_obs
+                if done:
+                    obs, _ = self.env.reset()
 
-            # <-- tu l'avais oublié
-            ep_return += reward
+            returns = []
+            G = 0
+            for r, d in zip(reversed(buffer["rewards"]), reversed(buffer["dones"])):
+                if d : G = 0
+                G = r + gamma * G # Calcule TD
+                returns.insert(0, G)
 
-            obs = next_obs
+            
+            returns = torch.tensor(returns, dtype=torch.float32)
+            values = torch.tensor(buffer["values"], dtype=torch.float32)
+            actions = torch.tensor(np.array(buffer["actions"]), dtype=torch.float32)
+            old_log_probs = torch.stack(buffer["log_probs"])
+            obs_tensor = torch.tensor(np.array(buffer["obs"]), dtype=torch.float32)
+            dones = torch.tensor(buffer["dones"], dtype=torch.float32)
+
+            # --------------------------------------------------------------
+            # GAE : Generalized Advantage Estimation
+            # --------------------------------------------------------------
+            advantages = self.compute_gae(buffer["rewards"], values.tolist(), dones.tolist(), gamma, lam)
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-6) # normale l'avantage
+
+            # --------------------------------------------------------------
+            # PPO updates
+            # --------------------------------------------------------------
+            dataset_size = len(returns)
+            for _ in range(epochs):
+                idx = torch.randperm(dataset_size) # eviter l'influence de l'ordre (on mélange)
+
+                # transforme les données bruts et calcule le gradient sur des batchs (des petits morceaux)
+                # accèlere le code de decouper
+                for start in range(0, dataset_size, mini_batch_size):
+                    end = start + mini_batch_size
+                    batch_idx = idx[start:end]
+
+                    b_obs = obs_tensor[batch_idx]
+                    b_actions = actions[batch_idx]
+                    b_old_logp = old_log_probs[batch_idx]
+                    b_adv = advantages[batch_idx]
+                    b_returns = returns[batch_idx]
+
+                    dist = self.policyNetwork.getDist(b_obs)
+
+                    # Clipping
+                    raw_action = torch.atanh(torch.clamp(b_actions, -0.999, 0.999))
+
+                    # Calcule ratio
+                    new_logp = dist.log_prob(raw_action).sum(dim=-1)
+                    new_logp -= torch.log(1 - b_actions.pow(2) + 1e-6).sum(dim=-1)
+                    ratio = torch.exp(new_logp - b_old_logp)
+
+                    # Clipping ratio
+                    clipped_ratio = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
+                    policy_loss = -torch.min(ratio * b_adv, clipped_ratio * b_adv).mean()
+
+                    # Erreur Quadratique (MSE)
+                    value_pred = self.valueNetwork(b_obs)
+                    value_loss = ((b_returns - value_pred)**2).mean()
+
+                    opt_policy.zero_grad()
+                    policy_loss.backward()
+                    opt_policy.step()
+
+                    opt_value.zero_grad()
+                    value_loss.backward()
+                    opt_value.step()
+
+            # --------------------------------------------------------------
+            # Logging
+            # --------------------------------------------------------------
+            returns_log.append(np.sum(buffer["rewards"]))
+            buffer = {k: [] for k in buffer}
+
+            if episode % 10 == 0:
+                print(f"Episode {episode}/{episodes} | Return: {returns_log[-1]:.2f}")
+            
+
+        return returns_log
+
+    def test(self, episodes,
+                steps_per_update=4000):
+
+        obs, _ = envTest.reset()
+        
+        for _ in range(episodes):
+            for _ in range(steps_per_update):
+                obs_t = torch.tensor(obs, dtype=torch.float32)
+                action, _ = self.policyNetwork.sample_action(obs_t)
+
+                next_obs, reward, terminated, truncated, _ = envTest.step(action.detach().numpy())
+                done = terminated or truncated
+                # print("reward ", reward)
+
+                
+                obs = next_obs
+                if done:
+                    obs, _ = envTest.reset()
 
 
-        # fin d’épisode
-        totalEpisodeReward += ep_return
-        returns_list.append(ep_return)
 
+# Initialisation
+hardcore = False
+sizeModel = 64
+gamma=0.99; lam=0.95; clip_eps=0.2; policy_lr=3e-4; value_lr=1e-3
+# gamma=0.99; lam=0.95; clip_eps=0.2; policy_lr=1e-4; value_lr=5e-4
 
-        totalEpisodeReward += reward
+PATH = 'C:/Users/nathw/Desktop/TIPE/Code/BipedalWalkerTerminer/Models/ModelTest'
+PATH_INITIAL = 'C:/Users/nathw/Desktop/TIPE/Code/BipedalWalkerTerminer/Models/ModelInitial'
 
-        returns_list.append(ep_return)
+env = gym.make("BipedalWalker-v3", hardcore=hardcore)
+envTest = gym.make("BipedalWalker-v3", render_mode="human",  hardcore=hardcore)
 
-        if ep % NOMBRE_EPISODE == 0:
-            print(f"Episode {ep} | Return: {totalEpisodeReward/NOMBRE_EPISODE:.6f}")
-            totalEpisodeReward = 0            
-
-    return returns_list
-
-
-# ===========================================
-# Main
-# ===========================================
-
-env = gym.make("BipedalWalker-v3", render_mode=None)
-obs_dim = env.observation_space.shape[0]
-action_dim = env.action_space.shape[0]
-
-
-actorPolicy = GaussianPolicy(obs_dim, action_dim)
-criticPolicy = ValueNet(obs_dim)
-
-episodes = 200
-
-returns = actor_critic(env, actorPolicy, criticPolicy, episodes)
-
-env = gym.make("BipedalWalker-v3", render_mode="human")
-obs_dim = env.observation_space.shape[0]
-action_dim = env.action_space.shape[0]
-returns = actor_critic(env, actorPolicy, criticPolicy, 10)
-
-plt.plot(returns)
-plt.xlabel("Épisode")
-plt.ylabel("Retour")
-plt.title("Actor–Critic (A2C) sur BipedalWalker-v3")
-plt.show()
+agent = AgentPPO(env,envTest, sizeModel)
+# agent.loadModel(PATH)
+returns = agent.train(episodes=100, gamma=gamma, lam=lam,
+                    clip_eps=clip_eps,
+                    policy_lr=policy_lr, value_lr=value_lr)
+# dessinerCourbe(returns, sizeModel, gamma, lam, clip_eps, policy_lr, value_lr)
+# agent.save(PATH)
+agent.test(10)
