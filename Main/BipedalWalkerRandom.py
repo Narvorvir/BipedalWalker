@@ -11,12 +11,12 @@ def randomPlay(iterations):
 
     for _ in range(iterations):
 
-        state, info = env.reset()
+        _, _ = env.reset()
         done = False
 
         while not done:
             actions = np.random.uniform(-1,1,actionSize)
-            observation, reward, terminated, truncated, info = env.step(actions)
+            _, _, terminated, truncated, _ = env.step(actions)
 
             done = terminated or truncated
 
