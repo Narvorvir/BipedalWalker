@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from torch.optim import Adam
+from moduleElemantaire import drawPlot
 
 # Créer l'environnement pour récupérer les dimensions
 env = gym.make('CartPole-v1', render_mode=None)
@@ -37,11 +38,12 @@ actorOptimize = Adam(actor.parameters(), lr=0.0005)
 criticOptimizer = Adam(critic.parameters(), lr=0.001)
 
 # Hyperparamètres
-NUM_EPISODES = 300 
+NUM_EPISODES = 151
 GAMMA = 0.99 # facteur d'atténuation à quel point les anciens états sont importants
 
 rewardsHistory = []
 avgRewards = []
+advantages_ep = []
 
 print("Entraînement lancé...")
 for episode in range(NUM_EPISODES):
@@ -49,6 +51,8 @@ for episode in range(NUM_EPISODES):
     episodeReward = 0
     done = False
     
+    advantages = []
+
     while not done:
         stateTensor = torch.FloatTensor(state)
         
@@ -74,11 +78,14 @@ for episode in range(NUM_EPISODES):
             
         # 5 Calcule de l'avantage 
         advantage = reward + GAMMA * nextStateValue - stateValue
+        advantages.append(advantage.item())
         
         # 6 Calcul des Pertes (Losses)
         log_prob = dist.log_prob(actionTensor)
         actor_loss = -log_prob * advantage.detach() # (- car ln) et contient à la fois le tensor et le graphe de calcul
         critic_loss = advantage.pow(2)
+
+        print(actor_loss)
         
         # 7 Mise à jour des poids des réseaux de neurones Actor et Critic
         # met à zero les gradients
@@ -101,6 +108,9 @@ for episode in range(NUM_EPISODES):
     rewardsHistory.append(episodeReward)
     avgReward = np.mean(rewardsHistory[-50:])
     avgRewards.append(avgReward)
+    
+    if episode%30 ==0:
+        advantages_ep.append(advantages)
     
     if (episode + 1) % 10 == 0:
         print(f"Épisode {episode+1}/{NUM_EPISODES} | Score: {episodeReward} | Moyenne (50 derniers): {avgReward:.1f}")
@@ -130,12 +140,21 @@ env_test = gym.make("CartPole-v1", render_mode="human")
 test_agent(env_test, actor, numEpisodes=5)
 env_test.close()
 
-# Courbe de progression
-plt.figure(figsize=(10, 5))
-plt.plot(rewardsHistory, label="Reward brut", alpha=0.4)
-plt.plot(avgRewards, label="Moyenne glissante (50)", color="red", linewidth=2)
-plt.xlabel("Épisodes")
-plt.ylabel("Reward")
-plt.title("Progression de l'entraînement de l'agent")
+plt.tight_layout()
+
+plt.subplot(2, 1,1)
+drawPlot(rewardsHistory, avgRewards)
+
+plt.subplot(2, 1, 2)
+
+print(len(advantages_ep))
+i =0
+for advantages in advantages_ep:
+    plt.plot(advantages,label=f"Avantage épisode {i*30}", alpha=0.4)
+    i += 1
+
+plt.xlabel("Épisodes t")
+plt.ylabel("A_t")
+plt.title("Avantages suivant i ème épisode")
 plt.legend()
 plt.show()
